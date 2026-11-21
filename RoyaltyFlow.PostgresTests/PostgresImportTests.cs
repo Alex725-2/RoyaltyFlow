@@ -28,7 +28,9 @@ public sealed class PostgresFixture : IAsyncLifetime
         await container.StartAsync();
         Source = NpgsqlDataSource.Create(ConnectionString);
         await using var db = CreateContext();
+        Assert.True(await DatabaseDeployment.HasPendingMigrationsAsync(db, default));
         await DatabaseDeployment.MigrateAsync(db, default);
+        Assert.False(await DatabaseDeployment.HasPendingMigrationsAsync(db, default));
         await DatabaseDeployment.MigrateAsync(db, default);
     }
 
@@ -45,6 +47,8 @@ public sealed class PostgresFixture : IAsyncLifetime
 
 public sealed class PostgresImportTests(PostgresFixture fixture) : IClassFixture<PostgresFixture>
 {
+    private const string WriteToken = "synthetic-postgres-integration-token";
+
     [Fact]
     public async Task ConcurrentIdenticalFilesReuseReceiptAndExistingEventIsDuplicate()
     {
@@ -54,6 +58,7 @@ public sealed class PostgresImportTests(PostgresFixture fixture) : IClassFixture
         var csv = $"{UsageCsvReader.Header}\n{Line(eventId, track)}\n{Line(eventId, track)}\n{Line(Guid.NewGuid(), unknownTrack)}\n";
         using var factory = CreateFactory();
         using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", WriteToken);
         using var preview = await client.PostAsync("/api/imports/preview", Body(csv));
         var forecast = await preview.Content.ReadFromJsonAsync<ImportPreview>();
         Assert.Equal(new ImportStatistics(3, 1, 1, 1), forecast!.Statistics);
@@ -90,6 +95,7 @@ public sealed class PostgresImportTests(PostgresFixture fixture) : IClassFixture
         var crlf = $"{UsageCsvReader.Header}\r\n{row}\r\n";
         using var factory = CreateFactory();
         using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", WriteToken);
         var responses = await Task.WhenAll(client.PostAsync("/api/imports/upload", Body(lf)),
             client.PostAsync("/api/imports/upload", Body(crlf)));
         using var first = responses[0];
@@ -151,7 +157,8 @@ public sealed class PostgresImportTests(PostgresFixture fixture) : IClassFixture
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
             configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ConnectionStrings:RoyaltyFlow"] = fixture.ConnectionString
+                ["ConnectionStrings:RoyaltyFlow"] = fixture.ConnectionString,
+                ["DemoAccess:WriteToken"] = WriteToken
             })));
 
     private async Task<Guid> SeedTrackAsync(bool createShares = true)

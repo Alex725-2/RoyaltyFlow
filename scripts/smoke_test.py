@@ -1,10 +1,13 @@
 """Exercise RoyaltyFlow with the unmodified, deterministic sample CSV."""
 
 import argparse
+import base64
 import csv
 import hashlib
 import io
 import json
+import os
+import re
 import sys
 from collections import defaultdict
 from datetime import date, timedelta
@@ -12,7 +15,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import UUID
 
 
@@ -28,23 +31,41 @@ def check(condition, message):
         raise ValueError(message)
 
 
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
+
+
 class Api:
-    def __init__(self, base_url):
+    def __init__(self, base_url, *, read_only):
         parsed = urlsplit(base_url)
         check(parsed.scheme in {"http", "https"} and parsed.hostname and
               not parsed.username and not parsed.password and not parsed.query and
               not parsed.fragment, "Provide an HTTP(S) base URL without credentials or query parameters.")
         self.base_url = base_url.rstrip("/")
+        check(parsed.scheme == "https" or parsed.hostname in {"127.0.0.1", "::1", "localhost"},
+              "Use HTTPS for remote smoke tests.")
+        password = os.environ.get("ROYALTYFLOW_DEMO_PASSWORD", "")
+        token = os.environ.get("ROYALTYFLOW_WRITE_TOKEN", "")
+        check(bool(password) if read_only else re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token) is not None,
+              "Set ROYALTYFLOW_DEMO_PASSWORD for read-only smoke or ROYALTYFLOW_WRITE_TOKEN for full smoke.")
+        self.authorization = (
+            "Basic " + base64.b64encode(f"demo:{password}".encode()).decode("ascii")
+            if read_only else f"Bearer {token}"
+        )
+        self.opener = build_opener(NoRedirect())
 
     def request(self, path, statuses=(200,), *, payload=None, upload=None):
         method = "POST" if payload is not None or upload is not None else "GET"
         body = upload if upload is not None else json.dumps(payload).encode() if payload is not None else None
         headers = {}
+        if path.startswith("/api/"):
+            headers["Authorization"] = self.authorization
         if body is not None:
             headers["Content-Type"] = "text/csv" if upload is not None else "application/json"
         request = Request(self.base_url + path, data=body, headers=headers, method=method)
         try:
-            with urlopen(request, timeout=30) as response:
+            with self.opener.open(request, timeout=30) as response:
                 status = response.status
                 data = json.load(response, parse_float=Decimal)
         except HTTPError as error:
@@ -136,17 +157,21 @@ def verify_totals(api, tracks, period):
               f"Missing, repeated or incorrect accruals for track {track_id}.")
 
 
-def run(api):
+def run(api, *, read_only):
     _, live = api.request("/health/live")
     _, ready = api.request("/health/ready")
     check(live["status"] == "Healthy" and ready["status"] == "Ready", "Unexpected health response.")
     content, tracks = load_sample()
     dates = [day for events in tracks.values() for day, _ in events.values()]
     first_date, last_date = min(dates), max(dates)
-    prepare_catalog(api, tracks, first_date, last_date)
-
-    expected = {"total": 100, "inserted": 100, "duplicate": 0, "invalid": 0}
     period = {"from": first_date.isoformat(), "to": last_date.isoformat()}
+    if read_only:
+        verify_totals(api, tracks, period)
+        print(f"Smoke OK: read-only demo access, 100 distinct events, {len(tracks)} tracks and exact royalties.")
+        return
+
+    prepare_catalog(api, tracks, first_date, last_date)
+    expected = {"total": 100, "inserted": 100, "duplicate": 0, "invalid": 0}
     _, first = api.request("/api/imports/upload", (200, 201), upload=content)
     check(first["status"] == "Completed" and first["statistics"] == expected and
           first["sha256"] == hashlib.sha256(content).hexdigest() and first["durationMs"] >= 0,
@@ -162,13 +187,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("base_url", nargs="?", default="http://127.0.0.1:18080")
     parser.add_argument("--check-fixture", action="store_true", help="Check the CSV without HTTP or writes.")
+    parser.add_argument("--read-only", action="store_true", help="Verify previously seeded demo data without writes.")
     args = parser.parse_args()
     try:
         if args.check_fixture:
             _, tracks = load_sample()
             print(f"Fixture OK: 100 distinct events across {len(tracks)} tracks.")
         else:
-            run(Api(args.base_url))
+            run(Api(args.base_url, read_only=args.read_only), read_only=args.read_only)
         return 0
     except (ValueError, OSError, KeyError, TypeError, ArithmeticError) as error:
         if isinstance(error, ValueError) and not isinstance(error, (json.JSONDecodeError, UnicodeError)):

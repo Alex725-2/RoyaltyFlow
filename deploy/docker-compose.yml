@@ -13,6 +13,8 @@ services:
       Postgres__Database: ${POSTGRES_DB:-royaltyflow}
       Postgres__User: ${POSTGRES_USER:-royaltyflow_user}
       Postgres__Password: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in deploy/.env}
+      DemoAccess__Password: ${ROYALTYFLOW_DEMO_PASSWORD:?Set ROYALTYFLOW_DEMO_PASSWORD in deploy/.env}
+      DemoAccess__WriteToken: ${ROYALTYFLOW_WRITE_TOKEN:?Set ROYALTYFLOW_WRITE_TOKEN in deploy/.env}
       Imports__SpoolDirectory: /tmp/royaltyflow-uploads
     networks:
       - postgres-network

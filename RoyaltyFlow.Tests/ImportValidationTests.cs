@@ -144,9 +144,9 @@ public sealed class ImportValidationTests
     public async Task MissingDatabaseKeepsLivenessAvailable()
     {
         using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
-            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
-                new Dictionary<string, string?> { ["ConnectionStrings:RoyaltyFlow"] = "" })));
+            builder.ConfigureAppConfiguration((_, configuration) => TestAccess.Configure(configuration, "")));
         using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = TestAccess.Demo;
         using var live = await client.GetAsync("/health/live");
         using var ready = await client.GetAsync("/health/ready");
         using var catalog = await client.GetAsync("/api/artists");
@@ -160,9 +160,10 @@ public sealed class ImportValidationTests
     public async Task InvalidRequestsReturnProblemDetailsBeforeDatabaseAccess()
     {
         using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
-            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
-                new Dictionary<string, string?> { ["ConnectionStrings:RoyaltyFlow"] = "Host=localhost;Database=unused" })));
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                TestAccess.Configure(configuration, "Host=localhost;Database=unused")));
         using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = TestAccess.Operator;
         using var invalidPage = await client.GetAsync("/api/usage?pageSize=201");
         using var invalidContract = await client.PostAsJsonAsync("/api/contracts", new CreateContractRequest(
             Guid.NewGuid(), new(2025, 1, 1), new(2024, 1, 1), [new(Guid.NewGuid(), 100)]));

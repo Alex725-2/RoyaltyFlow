@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.OpenApi.Models;
 using Npgsql;
 using RoyaltyFlow.Api;
 using RoyaltyFlow.Application;
@@ -26,7 +27,8 @@ if (args is ["--healthcheck"])
 }
 
 var migrate = args is ["--migrate"];
-var builder = WebApplication.CreateBuilder(migrate ? [] : args);
+var checkMigrations = args is ["--check-migrations"];
+var builder = WebApplication.CreateBuilder(migrate || checkMigrations ? [] : args);
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
     options.AllowInputFormatterExceptionMessages = false;
@@ -51,20 +53,39 @@ builder.Services.AddScoped<IRoyaltyAnalytics, PostgresRoyaltyAnalytics>();
 builder.Services.AddSwaggerGen(options =>
 {
     options.OperationFilter<CsvOpenApiFilter>();
+    options.OperationFilter<DemoAccessOpenApiFilter>();
+    options.AddSecurityDefinition(DemoAccessOpenApiFilter.Demo, new OpenApiSecurityScheme
+    {
+        Type = SecuritySchemeType.Http, Scheme = "basic", Description = "Demo account. Read only."
+    });
+    options.AddSecurityDefinition(DemoAccessOpenApiFilter.Writer, new OpenApiSecurityScheme
+    {
+        Type = SecuritySchemeType.Http, Scheme = "bearer", Description = "Separate operator token for writes."
+    });
     options.CustomSchemaIds(type => type.IsGenericType
         ? type.Name.Split('`')[0] + "Of" + string.Join("And", type.GetGenericArguments().Select(argument => argument.Name))
         : type.Name);
 });
 
 await using var app = builder.Build();
-if (migrate)
+if (migrate || checkMigrations)
 {
     try
     {
         await using var scope = app.Services.CreateAsyncScope();
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-        await DatabaseDeployment.MigrateAsync(scope.ServiceProvider.GetRequiredService<RoyaltyDbContext>(), timeout.Token);
-        Console.WriteLine("RoyaltyFlow migrations applied.");
+        var database = scope.ServiceProvider.GetRequiredService<RoyaltyDbContext>();
+        if (checkMigrations)
+        {
+            var pending = await DatabaseDeployment.HasPendingMigrationsAsync(database, timeout.Token);
+            Console.WriteLine(pending ? "RoyaltyFlow has pending migrations." : "RoyaltyFlow schema is up to date.");
+            Environment.ExitCode = pending ? 10 : 0;
+        }
+        else
+        {
+            await DatabaseDeployment.MigrateAsync(database, timeout.Token);
+            Console.WriteLine("RoyaltyFlow migrations applied.");
+        }
     }
     catch (Exception error)
     {
@@ -83,6 +104,8 @@ app.UseExceptionHandler(handler => handler.Run(async context =>
 app.UseStatusCodePages();
 app.UseSwagger();
 app.UseSwaggerUI(options => options.SwaggerEndpoint("v1/swagger.json", "RoyaltyFlow API v1"));
+app.UseWhen(context => context.Request.Path.StartsWithSegments("/api"),
+    branch => branch.UseMiddleware<DemoAccess>());
 
 app.MapGet("/health", () => TypedResults.Ok(new { Status = "Healthy" })).WithName("Health");
 app.MapGet("/health/live", () => TypedResults.Ok(new { Status = "Healthy" })).WithName("Liveness");

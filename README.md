@@ -37,10 +37,15 @@ dotnet run --project RoyaltyFlow.Api
 
 ## Каталог и импорт
 
+Swagger и health endpoints открываются без входа. Для GET к `/api` используйте Basic с логином `demo` и выданным демо-паролем. В Swagger выберите **Authorize** и **DemoBasic**. Для записи используйте отдельный **OperatorBearer**. Операторский токен также разрешает чтение. Публикуйте только синтетические данные в демонстрационной базе и используйте HTTPS для удалённого доступа.
+
+Для локального запуска API передайте `DemoAccess__Password` и `DemoAccess__WriteToken` через окружение процесса. Следующий пример использует операторский токен из переменной `ROYALTYFLOW_WRITE_TOKEN`.
+
 ```powershell
 $base = 'http://localhost:5080'
+$headers = @{ Authorization = "Bearer $env:ROYALTYFLOW_WRITE_TOKEN" }
 function Post-RoyaltyJson($path, $value) {
-    Invoke-RestMethod "$base$path" -Method Post -ContentType 'application/json' -Body ($value | ConvertTo-Json -Depth 6)
+    Invoke-RestMethod "$base$path" -Headers $headers -Method Post -ContentType 'application/json' -Body ($value | ConvertTo-Json -Depth 6)
 }
 $artist = Post-RoyaltyJson '/api/artists' @{ name = 'Demo Artist' }
 $holder = Post-RoyaltyJson '/api/rights-holders' @{ name = 'Demo Rights' }
@@ -52,10 +57,10 @@ Post-RoyaltyJson '/api/contracts' @{
 }
 $csv = "EventId,TrackId,Platform,Country,UsageDate,PlayCount`n$([guid]::NewGuid()),$trackId,DemoMusic,US,2025-01-01,10`n"
 $csv | Set-Content -Encoding utf8 data/demo-import.csv
-curl.exe -fsS -H "Content-Type: text/csv" --data-binary "@data/demo-import.csv" "$base/api/imports/preview"
-curl.exe -fsS -H "Content-Type: text/csv" --data-binary "@data/demo-import.csv" "$base/api/imports/upload"
-Invoke-RestMethod "$base/api/usage?trackId=$trackId&from=2025-01-01&to=2025-01-31&page=1&pageSize=50"
-Invoke-RestMethod "$base/api/royalties/summary?from=2025-01-01&to=2025-01-31"
+Invoke-RestMethod "$base/api/imports/preview" -Headers $headers -Method Post -ContentType 'text/csv' -InFile data/demo-import.csv
+Invoke-RestMethod "$base/api/imports/upload" -Headers $headers -Method Post -ContentType 'text/csv' -InFile data/demo-import.csv
+Invoke-RestMethod "$base/api/usage?trackId=$trackId&from=2025-01-01&to=2025-01-31&page=1&pageSize=50" -Headers $headers
+Invoke-RestMethod "$base/api/royalties/summary?from=2025-01-01&to=2025-01-31" -Headers $headers
 ```
 
 CSV отправляется непосредственно в теле запроса с `Content-Type: text/csv`. Максимум 128 МиБ. Результат первого upload — `201` с `Location`, повтор завершённого файла — `200` с существующим результатом. Пагинация списков начинается с `page=1`, принимает `pageSize` от 1 до 200 и возвращает `hasNext`. Даты в фильтрах использования и отчёта включительные. Отчёт показывает по треку число событий, сумму прослушиваний и сумму фактических начислений за период с сортировкой по ID трека.
@@ -76,6 +81,19 @@ dotnet test RoyaltyFlow.PostgresTests/RoyaltyFlow.PostgresTests.csproj
 
 ## Развёртывание RoyaltyFlow на VPS Fornex
 
+### GitHub Actions
+
+Workflow [RoyaltyFlow CI and release](.github/workflows/royaltyflow.yml) проверяет solution и отдельные интеграционные тесты PostgreSQL, собирает образ с тегом SHA коммита и передаёт этот образ на Fornex по SSH. Публикация разрешена только для актуального коммита `main`, когда переменная репозитория `ROYALTYFLOW_AUTO_DEPLOY` равна `true`.
+
+1. Создайте GitHub Environment `royaltyflow-production`, ограничьте его веткой `main` и назначьте проверяющего для первой выкладки. Добавьте secrets `FORNEX_SSH_PRIVATE_KEY` и `FORNEX_SSH_KNOWN_HOSTS`. Используйте выделенный ключ автоматизации, разрешённый для `root`. Возьмите строку `known_hosts` для `89.127.218.118` из доверенного источника и сверьте отпечаток ключа VPS перед добавлением.
+2. В существующем `/opt/royaltyflow/deploy/.env` с правами `0600` задайте `ROYALTYFLOW_DEMO_PASSWORD` и отдельный случайный `ROYALTYFLOW_WRITE_TOKEN`. Для токена подходят 32 случайных байта в hex. Пароль PostgreSQL остаётся в том же файле. Убедитесь, что база содержит только демонстрационные данные.
+3. До включения переменной подтвердите SSH-доступ, наличие работающего контейнера RoyaltyFlow, его локального образа и исходного Compose-файла, указанного в метке `com.docker.compose.project.config_files`. Проверьте восстановление предыдущего образа на совместимой схеме и доступность проверенного дампа для отдельного восстановления данных. Откат первой выкладки к версии до Demo Authentication восстановит прежние правила доступа, поэтому это поведение нужно учесть при согласовании первого релиза.
+4. После подтверждения включите `ROYALTYFLOW_AUTO_DEPLOY`. Следующий push в `main` запустит workflow. Его также можно запустить вручную для текущего `main`.
+
+На VPS скрипт сохраняет релизные Compose-файлы отдельно в `/opt/royaltyflow-releases`. Перед заменой API он проверяет конфигурацию отката и сохраняет тег предыдущего образа. Если есть миграции, скрипт создаёт и проверяет дамп перед их запуском. Если схема осталась прежней и health или smoke не прошли, скрипт возвращает предыдущий образ с его Compose-файлом. Если схема могла измениться, восстановление приложения и базы выполняется отдельно после проверки совместимости. Smoke после выкладки использует демо-вход через публичный HTTPS и проверяет уже загруженные 100 событий без операций записи.
+
+### Ручной запуск
+
 Выполняйте команды из корня отдельной копии RoyaltyFlow на VPS. Compose использует проект `royaltyflow` и подключает сервис `royaltyflow-api` к существующей сети `securities-repository_default`. API слушает в контейнере порт 8080, с VPS доступен на `http://127.0.0.1:18080`. Убедитесь, что этот порт свободен. PostgreSQL доступен по имени `securities-repository-postgres-1` внутри сети. Для этого сценария используются база `royaltyflow` и роль `royaltyflow_user`. Проверьте, что роль может подключаться к базе, создавать объекты в схеме `public` и временные таблицы. Если `btree_gist` ещё отсутствует, потребуется право `CREATE` на базе или предварительная установка расширения администратором в этой базе.
 
 ### Конфигурация, миграция и запуск
@@ -90,7 +108,7 @@ chmod 600 deploy/.env
 ${EDITOR:-vi} deploy/.env
 ```
 
-Укажите выданный пароль в `POSTGRES_PASSWORD`. Для буквального значения с символами `$`, `#` или пробелами используйте одинарные кавычки. Апостроф внутри значения записывается как `\'`. Не экспортируйте одноимённые переменные в текущий shell, иначе они перекроют файл. Используйте `docker compose config -q` для проверки без вывода разрешённой конфигурации. Пользователи с доступом к Docker могут прочитать окружение контейнера.
+Укажите выданный пароль в `POSTGRES_PASSWORD`, демо-пароль в `ROYALTYFLOW_DEMO_PASSWORD` и отдельный токен в `ROYALTYFLOW_WRITE_TOKEN`. Для буквального значения с символами `$`, `#` или пробелами используйте одинарные кавычки. Апостроф внутри значения записывается как `\'`. Не экспортируйте одноимённые переменные в текущий shell, иначе они перекроют файл. Используйте `docker compose config -q` для проверки без вывода разрешённой конфигурации. Пользователи с доступом к Docker могут прочитать окружение контейнера.
 
 Следующий блок использует отдельный тег образа для релиза. Перед миграцией сделайте резервную копию по инструкции ниже и проверьте изменения схемы. Текущая миграция создаёт объекты. Изменения, удаляющие данные, требуют отдельного согласования.
 
@@ -110,7 +128,7 @@ curl -fsS http://127.0.0.1:18080/health/ready
 
 ### Проверка импорта
 
-Оба скрипта используют стандартную библиотеку Python 3. Запускайте их на выделенной базе `royaltyflow` с исходным образцом из этого релиза. Сценарий добавляет синтетический каталог, договоры, события и начисления. Повторный запуск использует тот же справочник и результат импорта. Если образец уже импортировали без договоров или с другими правилами, скрипт завершится ошибкой сверки.
+Оба скрипта используют стандартную библиотеку Python 3. Полный сценарий получает токен из переменной процесса `ROYALTYFLOW_WRITE_TOKEN` и добавляет синтетический каталог, договоры, события и начисления. Повторный запуск использует тот же справочник и результат импорта. Для ранее загруженного образца можно задать `ROYALTYFLOW_DEMO_PASSWORD` и выполнить `bash scripts/smoke-test.sh http://127.0.0.1:18080 --read-only` или передать `-ReadOnly` в PowerShell. Если образец импортировали без договоров или с другими правилами, скрипт завершится ошибкой сверки.
 
 ```bash
 bash scripts/smoke-test.sh http://127.0.0.1:18080
