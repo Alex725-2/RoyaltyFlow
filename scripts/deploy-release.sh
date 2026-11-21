@@ -20,7 +20,7 @@ fail() {
 [[ $revision =~ ^[a-f0-9]{40}$ && -d $release && ! -L $release ]] ||
     fail 'Invalid release directory or revision.'
 case "$mode:$release" in
-    deploy:/opt/royaltyflow-releases/release.*|preflight:/tmp/royaltyflow-check.*|diagnose:/tmp/royaltyflow-check.*) ;;
+    deploy:/opt/royaltyflow-releases/release.*|deploy-seed:/opt/royaltyflow-releases/release.*|preflight:/tmp/royaltyflow-check.*|diagnose:/tmp/royaltyflow-check.*) ;;
     *) fail 'Invalid mode or staging directory.' ;;
 esac
 [[ -s $env_file && -f $env_file && ! -L $env_file && $(stat -c %a -- "$env_file") == 600 ]] ||
@@ -74,6 +74,8 @@ if mode != "rollback":
         print(demo)
     elif mode == "backup":
         print(password)
+    elif mode == "operator":
+        print(token)
 ' "$tag" "$mode" 2>/dev/null
 }
 
@@ -236,3 +238,12 @@ demo_password=$(checked_config "$compose_file" "$revision" demo) ||
 ROYALTYFLOW_DEMO_PASSWORD="$demo_password" python3 "$release/scripts/smoke_test.py" "$public_api" --read-only ||
     fail 'Public read-only smoke test failed.'
 printf 'RoyaltyFlow release %s is healthy.\n' "$revision"
+if [[ $mode == deploy-seed ]]; then
+    # The release passed its smoke test. A partial, retryable seed must not roll back the API.
+    trap - EXIT
+    operator_token=$(checked_config "$compose_file" "$revision" operator) ||
+        fail 'Could not load the operator credential for the portfolio seed.'
+    ROYALTYFLOW_WRITE_TOKEN="$operator_token" ROYALTYFLOW_DEMO_PASSWORD="$demo_password" \
+        python3 "$release/scripts/seed_portfolio.py" --base-url "$local_api" --verify-url "$public_api" ||
+        fail 'The release is healthy. Portfolio seed did not complete and can be retried.'
+fi

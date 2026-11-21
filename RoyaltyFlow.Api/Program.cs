@@ -52,6 +52,12 @@ builder.Services.AddScoped<IUsageImporter, PostgresUsageImporter>();
 builder.Services.AddScoped<IRoyaltyAnalytics, PostgresRoyaltyAnalytics>();
 builder.Services.AddSwaggerGen(options =>
 {
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "RoyaltyFlow API",
+        Version = "v1",
+        Description = "Портфолио: метка [DEMO] обозначает вымышленные договоры, правообладателей, прослушивания и роялти. Имена исполнителей и названия песен приведены для примера."
+    });
     options.OperationFilter<CsvOpenApiFilter>();
     options.OperationFilter<DemoAccessOpenApiFilter>();
     options.AddSecurityDefinition(DemoAccessOpenApiFilter.Demo, new OpenApiSecurityScheme

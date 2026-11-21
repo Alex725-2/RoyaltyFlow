@@ -4,7 +4,10 @@ param(
     [switch]$PreflightOnly,
 
     [Parameter(ParameterSetName = 'Diagnose')]
-    [switch]$DiagnoseMigration
+    [switch]$DiagnoseMigration,
+
+    [Parameter(ParameterSetName = 'Publish')]
+    [switch]$SeedPortfolio
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,8 +24,8 @@ function Invoke-Checked([string]$Program, [string[]]$Arguments) {
 }
 
 function Invoke-Fornex([string]$Mode, [string]$Revision, [string]$Archive) {
-    if ($Mode -eq 'deploy') {
-        $remoteCommand = 'set -eu; umask 077; install -d -m 700 /opt/royaltyflow-releases; release=$(mktemp -d /opt/royaltyflow-releases/release.XXXXXXXX); tar --no-same-owner --no-same-permissions -xzf - -C $release; exec bash $release/scripts/deploy-release.sh $release __REVISION__ deploy'
+    if ($Mode -in @('deploy', 'deploy-seed')) {
+        $remoteCommand = 'set -eu; umask 077; install -d -m 700 /opt/royaltyflow-releases; release=$(mktemp -d /opt/royaltyflow-releases/release.XXXXXXXX); tar --no-same-owner --no-same-permissions -xzf - -C $release; exec bash $release/scripts/deploy-release.sh $release __REVISION__ __MODE__'
     } else {
         $remoteCommand = 'set -eu; umask 077; release=$(mktemp -d /tmp/royaltyflow-check.XXXXXXXX); trap cleanup EXIT; cleanup() { rm -rf -- $release; }; tar --no-same-owner --no-same-permissions -xzf - -C $release; bash $release/scripts/deploy-release.sh $release __REVISION__ __MODE__'
     }
@@ -89,6 +92,7 @@ try {
         Invoke-Checked dotnet @('restore', 'RoyaltyFlow.sln')
         Invoke-Checked dotnet @('build', 'RoyaltyFlow.sln', '-c', 'Release', '--no-restore')
         Invoke-Checked dotnet @('test', 'RoyaltyFlow.sln', '-c', 'Release', '--no-build', '--no-restore')
+        Invoke-Checked py @('-3', '-m', 'unittest', 'discover', '-s', 'scripts')
         if ((& git rev-parse --verify HEAD) -cne $revision -or (& git status --porcelain --untracked-files=normal)) {
             throw 'The checkout changed during verification.'
         }
@@ -113,7 +117,8 @@ try {
     if ($LASTEXITCODE -ne 0 -or $published -cne "$revision`trefs/heads/main") {
         throw 'GitHub main no longer points to the tested commit. Release skipped.'
     }
-    Invoke-Fornex 'deploy' $revision $archive
+    $publishMode = if ($SeedPortfolio) { 'deploy-seed' } else { 'deploy' }
+    Invoke-Fornex $publishMode $revision $archive
 } finally {
     if ($archive -and (Test-Path -LiteralPath $archive)) {
         Remove-Item -LiteralPath $archive

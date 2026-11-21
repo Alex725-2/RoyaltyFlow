@@ -16,6 +16,7 @@ internal sealed class DemoAccess(RequestDelegate next, IConfiguration configurat
     public async Task InvokeAsync(HttpContext context)
     {
         context.Response.Headers.CacheControl = "no-store";
+        context.Response.Headers["X-RoyaltyFlow-Data"] = "[DEMO] tracks: fictional rights holders, contracts, usage and royalties";
         var read = IsRead(context.Request.Method);
         var header = context.Request.Headers.Authorization.ToString();
         var demo = false;

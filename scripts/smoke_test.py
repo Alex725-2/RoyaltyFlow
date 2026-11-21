@@ -55,11 +55,11 @@ class Api:
         )
         self.opener = build_opener(NoRedirect())
 
-    def request(self, path, statuses=(200,), *, payload=None, upload=None):
+    def request(self, path, statuses=(200,), *, payload=None, upload=None, authenticated=True):
         method = "POST" if payload is not None or upload is not None else "GET"
         body = upload if upload is not None else json.dumps(payload).encode() if payload is not None else None
         headers = {}
-        if path.startswith("/api/"):
+        if authenticated and path.startswith("/api/"):
             headers["Authorization"] = self.authorization
         if body is not None:
             headers["Content-Type"] = "text/csv" if upload is not None else "application/json"

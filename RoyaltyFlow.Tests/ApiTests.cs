@@ -128,6 +128,7 @@ public sealed class ApiTests
         var json = await client.GetStringAsync("/swagger/v1/swagger.json");
         Assert.DoesNotContain(configurationMarker, json);
         using var schema = JsonDocument.Parse(json);
+        Assert.Contains("[DEMO]", schema.RootElement.GetProperty("info").GetProperty("description").GetString());
         Assert.True(schema.RootElement.GetProperty("paths").GetProperty("/health")
             .TryGetProperty("get", out _));
         if (schema.RootElement.TryGetProperty("servers", out var servers))

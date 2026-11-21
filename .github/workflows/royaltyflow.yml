@@ -39,6 +39,7 @@ jobs:
           ROYALTYFLOW_WRITE_TOKEN: synthetic-compose-check-operator-token
         run: |
           bash -n scripts/deploy-release.sh
+          python3 -m unittest discover -s scripts
           python3 scripts/smoke_test.py --check-fixture
           docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config -q
           docker build --file RoyaltyFlow.Api/Dockerfile --tag "royaltyflow-api:$GITHUB_SHA" .
