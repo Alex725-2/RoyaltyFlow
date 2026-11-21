@@ -17,6 +17,61 @@ namespace RoyaltyFlow.Tests;
 public sealed class ApiTests
 {
     [Fact]
+    public async Task DashboardAssetsAndProtectedApiShareOneOrigin()
+    {
+        var webRoot = Directory.CreateTempSubdirectory("royaltyflow-webroot-");
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(webRoot.FullName, "assets"));
+            Directory.CreateDirectory(Path.Combine(webRoot.FullName, "api"));
+            await File.WriteAllTextAsync(Path.Combine(webRoot.FullName, "index.html"), "<div id=\"root\">Dashboard</div>");
+            await File.WriteAllTextAsync(Path.Combine(webRoot.FullName, "assets", "index-test.js"), "export {}");
+            await File.WriteAllTextAsync(Path.Combine(webRoot.FullName, "api", "private.js"), "public access must not work");
+            using var factory = new WebApplicationFactory<Program>();
+            using var configured = factory.WithWebHostBuilder(builder =>
+            {
+                builder.UseEnvironment("Production");
+                builder.UseWebRoot(webRoot.FullName);
+                builder.ConfigureAppConfiguration((_, configuration) =>
+                    TestAccess.Configure(configuration, "Host=localhost;Database=unused"));
+            });
+            using var client = configured.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                BaseAddress = new Uri("https://royalty.test"), AllowAutoRedirect = false
+            });
+
+            using var index = await client.GetAsync("/");
+            Assert.Equal(HttpStatusCode.OK, index.StatusCode);
+            Assert.Equal("text/html", index.Content.Headers.ContentType?.MediaType);
+            Assert.Equal(true, index.Headers.CacheControl?.NoCache);
+            Assert.Contains("Dashboard", await index.Content.ReadAsStringAsync());
+
+            using var script = await client.GetAsync("/assets/index-test.js");
+            Assert.Equal(HttpStatusCode.OK, script.StatusCode);
+            Assert.Contains("javascript", script.Content.Headers.ContentType?.MediaType);
+            Assert.Contains("nosniff", script.Headers.GetValues("X-Content-Type-Options"));
+            Assert.Contains(script.Headers.CacheControl!.Extensions, directive => directive.Name == "immutable");
+            using var missingAsset = await client.GetAsync("/assets/missing.js");
+            Assert.Equal(HttpStatusCode.NotFound, missingAsset.StatusCode);
+
+            using var health = await client.GetAsync("/health");
+            Assert.Equal(HttpStatusCode.OK, health.StatusCode);
+            using var swagger = await client.GetAsync("/swagger/index.html");
+            Assert.Equal(HttpStatusCode.OK, swagger.StatusCode);
+            using var privateFile = await client.GetAsync("/api/private.js");
+            Assert.Equal(HttpStatusCode.Unauthorized, privateFile.StatusCode);
+
+            client.DefaultRequestHeaders.Authorization = TestAccess.Demo;
+            using var write = await client.PostAsync("/api/imports/upload", new StringContent(""));
+            Assert.Equal(HttpStatusCode.Forbidden, write.StatusCode);
+        }
+        finally
+        {
+            webRoot.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task RoyaltySummaryBindsPageAndPageSizeWithoutRepeatingTracks()
     {
         var rows = new[]

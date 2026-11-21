@@ -141,8 +141,15 @@ rollback_tag="rollback-${previous_image#sha256:}"
 checked_config "$previous_compose" "$rollback_tag" rollback ||
     fail 'Rollback Compose configuration is invalid.'
 wait_health "$previous_image" || fail 'Current API did not pass health checks. Deployment stopped.'
+previous_dashboard=false
+if docker exec "$current" test -r /app/wwwroot/index.html; then
+    previous_dashboard=true
+fi
+verify_dashboard() {
+    python3 "$release/scripts/check_dashboard.py" "$local_api" "$public_api"
+}
 if [[ $mode == preflight ]]; then
-    printf 'Preflight passed. The current container, Compose file and image are available for rollback.\n'
+    printf 'Preflight passed. The current Compose file and image are available for rollback.\n'
     exit 0
 fi
 docker image tag "$previous_image" "royaltyflow-api:$rollback_tag"
@@ -157,8 +164,8 @@ on_exit() {
     if [[ $schema_touched == true ]]; then
         printf 'Automatic application rollback requires the unchanged schema. Backup: %s\n' "$backup" >&2
     elif compose "$previous_compose" "$rollback_tag" up -d --no-deps --no-build --pull never royaltyflow-api >/dev/null 2>&1 &&
-        wait_health "$previous_image"; then
-        printf 'Previous API image restored and healthy. The release failed.\n' >&2
+        wait_health "$previous_image" && { [[ $previous_dashboard == false ]] || verify_dashboard; }; then
+        printf 'Previous release restored and healthy. The release failed.\n' >&2
     else
         printf 'Automatic application rollback failed. Retained image: royaltyflow-api:%s\n' "$rollback_tag" >&2
     fi
@@ -169,7 +176,7 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-printf 'Building RoyaltyFlow image from commit %s.\n' "$revision"
+printf 'Building the Dashboard and API image from commit %s.\n' "$revision"
 compose "$compose_file" "$revision" build royaltyflow-api ||
     fail 'Compose failed to build the release image.'
 release_image=$(docker image inspect --format '{{.Id}}' "royaltyflow-api:$revision")
@@ -227,9 +234,12 @@ switch_attempted=true
 compose "$compose_file" "$revision" up -d --no-deps --no-build --pull never royaltyflow-api >/dev/null 2>&1 ||
     fail 'Compose failed to start the release API.'
 wait_health "$release_image" || fail 'Release container did not become healthy and ready.'
-status=$(curl --noproxy '*' -sS --max-time 10 -o /dev/null -w '%{http_code}' "$public_api/swagger/index.html") ||
-    fail 'Public Swagger did not respond.'
-[[ $status == 200 ]] || fail "Public Swagger returned HTTP $status."
+verify_dashboard || fail 'Dashboard failed the local and public route checks.'
+for path in /health /swagger/index.html /swagger/v1/swagger.json; do
+    status=$(curl --noproxy '*' -sS --max-time 10 -o /dev/null -w '%{http_code}' "$public_api$path") ||
+        fail "Public $path did not respond."
+    [[ $status == 200 ]] || fail "Public $path returned HTTP $status."
+done
 status=$(curl --noproxy '*' -sS --max-time 10 -o /dev/null -w '%{http_code}' "$public_api/api/usage") ||
     fail 'Public API did not respond.'
 [[ $status == 401 ]] || fail "Public API should challenge anonymous reads (HTTP $status)."

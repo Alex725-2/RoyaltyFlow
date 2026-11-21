@@ -35,7 +35,7 @@ npm.cmd run build
 npm.cmd run preview
 ```
 
-`frontend/dist` — статическая production-сборка. Для её размещения нужен тот же origin для Dashboard и `/api/*`. Ссылке на Swagger нужен доступ к `/swagger/*` на этом же origin. При отдельном хостинге Dashboard эти пути следует проксировать на действующее API через HTTPS с передачей заголовка `Authorization`. Маршруты разделов используют hash, поэтому для них не нужны серверные перенаправления.
+`frontend/dist` — статическая production-сборка. Dockerfile собирает её на Node.js 24 и копирует в `wwwroot` образа RoyaltyFlow. ASP.NET Core отдаёт Dashboard по `/` и сборку по `/assets/*`. API, Swagger и health используют тот же origin. Маршруты разделов используют hash.
 
 ## Подключение и миграции
 
@@ -111,9 +111,11 @@ dotnet test RoyaltyFlow.PostgresTests/RoyaltyFlow.PostgresTests.csproj
 & 'E:\RoyaltyFlow\scripts\deploy-fornex.ps1'
 ```
 
-Скрипт проверяет чистый checkout, собирает solution и запускает тесты. После проверки VPS он отправляет проверенный коммит в GitHub и передаёт архив того же коммита на VPS. Для GitHub используется существующая авторизация Git. SSH использует ключ `C:\Users\Alex\.ssh\fornex_codex` и проверяет ключ VPS по `C:\Users\Alex\.ssh\known_hosts`. В [GitHub Actions](.github/workflows/royaltyflow.yml) выполняются тесты и сборка образа.
+Скрипт проверяет чистый checkout, собирает solution и Dashboard, запускает тесты, затем проверяет VPS. Он отправляет проверенный коммит в GitHub и передаёт архив того же коммита на VPS. Для GitHub используется существующая авторизация Git. SSH использует ключ `C:\Users\Alex\.ssh\fornex_codex` и проверяет ключ VPS по `C:\Users\Alex\.ssh\known_hosts`. В [GitHub Actions](.github/workflows/royaltyflow.yml) выполняются тесты и сборка образа.
 
-В существующем `/opt/royaltyflow/deploy/.env` с правами `0600` используются `POSTGRES_PASSWORD`, `ROYALTYFLOW_DEMO_PASSWORD` и отдельный случайный `ROYALTYFLOW_WRITE_TOKEN`. VPS собирает образ с тегом SHA коммита и сохраняет релиз в `/opt/royaltyflow-releases`. Перед заменой API скрипт проверяет возможность отката и создаёт проверенный дамп базы `royaltyflow`. Миграции применяются при наличии ожидающих. При сбое health или smoke на прежней схеме восстанавливаются предыдущий образ и его конфигурация. Если схема могла измениться, для восстановления используются сохранённые образ, конфигурация и дамп после проверки совместимости. Откат к версии до Demo Authentication возвращает её правила доступа.
+В существующем `/opt/royaltyflow/deploy/.env` с правами `0600` используются `POSTGRES_PASSWORD`, `ROYALTYFLOW_DEMO_PASSWORD` и отдельный случайный `ROYALTYFLOW_WRITE_TOKEN`. Они передаются API как параметры процесса. VPS собирает один образ для Dashboard и API с тегом SHA коммита и сохраняет релиз в `/opt/royaltyflow-releases`. Действующий Caddy завершает HTTPS и проксирует домен RoyaltyFlow на прежний `127.0.0.1:18080`.
+
+Перед переключением скрипт проверяет возможность отката и создаёт проверенный дамп базы `royaltyflow`. Миграции применяются при наличии ожидающих. После переключения скрипт сверяет HTML, JavaScript и CSS Dashboard между loopback и публичным доменом, проверяет Swagger, health и выполняет read-only smoke. При сбое на прежней схеме восстанавливаются предыдущий образ и его конфигурация. Если схема могла измениться, для восстановления используются сохранённые образ, конфигурация и дамп после проверки совместимости. Откат к версии до Demo Authentication возвращает её правила доступа.
 
 Параметр `-PreflightOnly` проверяет VPS и возможность отката. `-DiagnoseMigration` показывает сохранённую сводку и читает метаданные PostgreSQL. Smoke после публикации проверяет 100 событий под демо-учётной записью через публичный HTTPS без записи в базу.
 

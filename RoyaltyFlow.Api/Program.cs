@@ -108,6 +108,22 @@ app.UseExceptionHandler(handler => handler.Run(async context =>
     await Results.Problem(statusCode: status, title: title).ExecuteAsync(context);
 }));
 app.UseStatusCodePages();
+app.UseWhen(context => context.Request.Path == "/" || context.Request.Path == "/index.html" ||
+    context.Request.Path.StartsWithSegments("/assets"), branch =>
+{
+    branch.UseDefaultFiles();
+    branch.UseStaticFiles(new StaticFileOptions
+    {
+        OnPrepareResponse = response =>
+        {
+            var context = response.Context;
+            context.Response.Headers.CacheControl = context.Request.Path.StartsWithSegments("/assets")
+                ? "public, max-age=31536000, immutable"
+                : "no-cache";
+            context.Response.Headers.XContentTypeOptions = "nosniff";
+        }
+    });
+});
 app.UseSwagger();
 app.UseSwaggerUI(options => options.SwaggerEndpoint("v1/swagger.json", "RoyaltyFlow API v1"));
 app.UseWhen(context => context.Request.Path.StartsWithSegments("/api"),

@@ -93,6 +93,14 @@ try {
         Invoke-Checked dotnet @('build', 'RoyaltyFlow.sln', '-c', 'Release', '--no-restore')
         Invoke-Checked dotnet @('test', 'RoyaltyFlow.sln', '-c', 'Release', '--no-build', '--no-restore')
         Invoke-Checked py @('-3', '-m', 'unittest', 'discover', '-s', 'scripts')
+        Push-Location -LiteralPath (Join-Path $repository 'frontend')
+        try {
+            Invoke-Checked npm.cmd @('ci', '--no-fund', '--no-audit')
+            Invoke-Checked npm.cmd @('test')
+            Invoke-Checked npm.cmd @('run', 'build')
+        } finally {
+            Pop-Location
+        }
         if ((& git rev-parse --verify HEAD) -cne $revision -or (& git status --porcelain --untracked-files=normal)) {
             throw 'The checkout changed during verification.'
         }
