@@ -48,14 +48,13 @@ builder.Services.AddDbContext<RoyaltyDbContext>((services, options) =>
 builder.Services.AddSingleton<RoyaltyCalculator>();
 builder.Services.AddScoped<IUsageImporter, PostgresUsageImporter>();
 builder.Services.AddScoped<IRoyaltyAnalytics, PostgresRoyaltyAnalytics>();
-if (builder.Environment.IsDevelopment())
-    builder.Services.AddSwaggerGen(options =>
-    {
-        options.OperationFilter<CsvOpenApiFilter>();
-        options.CustomSchemaIds(type => type.IsGenericType
-            ? type.Name.Split('`')[0] + "Of" + string.Join("And", type.GetGenericArguments().Select(argument => argument.Name))
-            : type.Name);
-    });
+builder.Services.AddSwaggerGen(options =>
+{
+    options.OperationFilter<CsvOpenApiFilter>();
+    options.CustomSchemaIds(type => type.IsGenericType
+        ? type.Name.Split('`')[0] + "Of" + string.Join("And", type.GetGenericArguments().Select(argument => argument.Name))
+        : type.Name);
+});
 
 await using var app = builder.Build();
 if (migrate)
@@ -82,11 +81,8 @@ app.UseExceptionHandler(handler => handler.Run(async context =>
     await Results.Problem(statusCode: status, title: title).ExecuteAsync(context);
 }));
 app.UseStatusCodePages();
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+app.UseSwagger();
+app.UseSwaggerUI(options => options.SwaggerEndpoint("v1/swagger.json", "RoyaltyFlow API v1"));
 
 app.MapGet("/health", () => TypedResults.Ok(new { Status = "Healthy" })).WithName("Health");
 app.MapGet("/health/live", () => TypedResults.Ok(new { Status = "Healthy" })).WithName("Liveness");

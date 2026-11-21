@@ -49,29 +49,42 @@ public sealed class ApiTests
     }
 
     [Theory]
-    [InlineData("Development", HttpStatusCode.OK)]
-    [InlineData("Production", HttpStatusCode.NotFound)]
-    public async Task HealthIsAvailableAndSwaggerIsDevelopmentOnly(
-        string environment, HttpStatusCode swaggerStatus)
+    [InlineData("Development")]
+    [InlineData("Production")]
+    public async Task HealthAndSwaggerAreAvailableOnTheRequestOrigin(string environment)
     {
+        const string configurationMarker = "SWAGGER_TEST_PRIVATE_CONFIGURATION";
+        var origin = new Uri("https://royalty.test");
         using var factory = new WebApplicationFactory<Program>();
-        using var configured = factory.WithWebHostBuilder(builder => builder.UseEnvironment(environment));
-        using var client = configured.CreateClient();
+        using var configured = factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment(environment);
+            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
+                new Dictionary<string, string?> { ["ConnectionStrings:RoyaltyFlow"] = configurationMarker }));
+        });
+        using var client = configured.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = origin });
 
         using var health = JsonDocument.Parse(await client.GetStringAsync("/health"));
         Assert.Equal("Healthy", health.RootElement.GetProperty("status").GetString());
 
-        using var document = await client.GetAsync("/swagger/v1/swagger.json");
-        using var ui = await client.GetAsync("/swagger/index.html");
-        Assert.Equal(swaggerStatus, document.StatusCode);
-        Assert.Equal(swaggerStatus, ui.StatusCode);
+        using var ui = await client.GetAsync("/swagger");
+        Assert.Equal(HttpStatusCode.OK, ui.StatusCode);
+        Assert.Equal(new Uri(origin, "/swagger/index.html"), ui.RequestMessage!.RequestUri);
+        var html = await ui.Content.ReadAsStringAsync();
+        Assert.Contains("index.js", html);
+        Assert.DoesNotContain(configurationMarker, html);
 
-        if (document.IsSuccessStatusCode)
-        {
-            using var schema = JsonDocument.Parse(await document.Content.ReadAsStringAsync());
-            Assert.True(schema.RootElement.GetProperty("paths").GetProperty("/health")
-                .TryGetProperty("get", out _));
-        }
+        var initializer = await client.GetStringAsync("/swagger/index.js");
+        Assert.Matches(@"""url""\s*:\s*""v1/swagger\.json""", initializer);
+        Assert.DoesNotContain(configurationMarker, initializer);
+
+        var json = await client.GetStringAsync("/swagger/v1/swagger.json");
+        Assert.DoesNotContain(configurationMarker, json);
+        using var schema = JsonDocument.Parse(json);
+        Assert.True(schema.RootElement.GetProperty("paths").GetProperty("/health")
+            .TryGetProperty("get", out _));
+        if (schema.RootElement.TryGetProperty("servers", out var servers))
+            Assert.All(servers.EnumerateArray(), server => Assert.Equal("/", server.GetProperty("url").GetString()));
     }
 
     private sealed class InMemoryAnalytics(IReadOnlyList<UsageSummary> rows) : IRoyaltyAnalytics
