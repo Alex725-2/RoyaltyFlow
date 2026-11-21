@@ -10,7 +10,7 @@ namespace RoyaltyFlow.Api;
 public sealed class CatalogController(RoyaltyDbContext db) : ControllerBase
 {
     [HttpGet("artists")]
-    public async Task<PageResult<Artist>> Artists([FromQuery] PageQuery page, CancellationToken token) =>
+    public async Task<PageResult<Artist>> Artists([FromQuery(Name = "")] PageQuery page, CancellationToken token) =>
         await FetchAsync(db.Artists.OrderBy(row => row.Id), page, token);
 
     [HttpPost("artists")]
@@ -26,7 +26,7 @@ public sealed class CatalogController(RoyaltyDbContext db) : ControllerBase
     }
 
     [HttpGet("tracks")]
-    public async Task<PageResult<Track>> Tracks([FromQuery] PageQuery page, CancellationToken token) =>
+    public async Task<PageResult<Track>> Tracks([FromQuery(Name = "")] PageQuery page, CancellationToken token) =>
         await FetchAsync(db.Tracks.OrderBy(row => row.Id), page, token);
 
     [HttpPost("tracks")]
@@ -42,7 +42,7 @@ public sealed class CatalogController(RoyaltyDbContext db) : ControllerBase
     }
 
     [HttpGet("rights-holders")]
-    public async Task<PageResult<RightsHolder>> RightsHolders([FromQuery] PageQuery page, CancellationToken token) =>
+    public async Task<PageResult<RightsHolder>> RightsHolders([FromQuery(Name = "")] PageQuery page, CancellationToken token) =>
         await FetchAsync(db.RightsHolders.OrderBy(row => row.Id), page, token);
 
     [HttpPost("rights-holders")]
@@ -58,7 +58,7 @@ public sealed class CatalogController(RoyaltyDbContext db) : ControllerBase
     }
 
     [HttpGet("contracts")]
-    public async Task<PageResult<ContractResponse>> Contracts([FromQuery] PageQuery page, CancellationToken token)
+    public async Task<PageResult<ContractResponse>> Contracts([FromQuery(Name = "")] PageQuery page, CancellationToken token)
     {
         var rows = await db.Contracts.AsNoTracking().Include(row => row.Shares).OrderBy(row => row.Id)
             .Skip(page.Offset).Take(page.PageSize + 1).ToListAsync(token);

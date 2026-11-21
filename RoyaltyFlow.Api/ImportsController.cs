@@ -11,7 +11,7 @@ public sealed class ImportsController(RoyaltyDbContext db, IUsageImporter import
     IWebHostEnvironment environment, IConfiguration configuration) : ControllerBase
 {
     [HttpGet]
-    public async Task<PageResult<ImportReceipt>> Imports([FromQuery] PageQuery page, CancellationToken token)
+    public async Task<PageResult<ImportReceipt>> Imports([FromQuery(Name = "")] PageQuery page, CancellationToken token)
     {
         var rows = await db.Imports.AsNoTracking().OrderByDescending(row => row.CreatedAt)
             .ThenByDescending(row => row.Id).Skip(page.Offset).Take(page.PageSize + 1).ToListAsync(token);

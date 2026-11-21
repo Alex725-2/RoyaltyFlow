@@ -11,7 +11,7 @@ namespace RoyaltyFlow.Api;
 public sealed class UsageController(RoyaltyDbContext db, IRoyaltyAnalytics analytics) : ControllerBase
 {
     [HttpGet("usage")]
-    public async Task<ActionResult<PageResult<UsageRecord>>> Usage([FromQuery] PageQuery page, Guid? trackId,
+    public async Task<ActionResult<PageResult<UsageRecord>>> Usage([FromQuery(Name = "")] PageQuery page, Guid? trackId,
         DateOnly? from, DateOnly? to, CancellationToken token)
     {
         if (trackId == Guid.Empty || from > to)
@@ -28,7 +28,7 @@ public sealed class UsageController(RoyaltyDbContext db, IRoyaltyAnalytics analy
     }
 
     [HttpGet("royalties/summary")]
-    public async Task<ActionResult<PageResult<UsageSummary>>> Summary([FromQuery] PageQuery page, DateOnly? from,
+    public async Task<ActionResult<PageResult<UsageSummary>>> Summary([FromQuery(Name = "")] PageQuery page, DateOnly? from,
         DateOnly? to, CancellationToken token)
     {
         if (!from.HasValue || !to.HasValue || from > to)
