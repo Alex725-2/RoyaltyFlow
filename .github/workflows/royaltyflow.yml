@@ -1,4 +1,4 @@
-name: RoyaltyFlow CI and release
+name: RoyaltyFlow CI
 
 on:
   pull_request:
@@ -42,72 +42,3 @@ jobs:
           python3 scripts/smoke_test.py --check-fixture
           docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config -q
           docker build --file RoyaltyFlow.Api/Dockerfile --tag "royaltyflow-api:$GITHUB_SHA" .
-      - name: Package the tested image and deployment files
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.ROYALTYFLOW_AUTO_DEPLOY == 'true'
-        run: |
-          mkdir -p "$RUNNER_TEMP/royaltyflow-bundle"
-          docker save "royaltyflow-api:$GITHUB_SHA" | gzip -1 > "$RUNNER_TEMP/royaltyflow-bundle/image.tar.gz"
-          tar -czf "$RUNNER_TEMP/royaltyflow-release.tgz" \
-            -C "$RUNNER_TEMP/royaltyflow-bundle" image.tar.gz \
-            -C "$GITHUB_WORKSPACE" deploy/docker-compose.yml scripts/deploy-release.sh scripts/smoke_test.py data/sample-small.csv
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.ROYALTYFLOW_AUTO_DEPLOY == 'true'
-        with:
-          name: royaltyflow-release-${{ github.sha }}
-          path: ${{ runner.temp }}/royaltyflow-release.tgz
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
-
-  deploy:
-    needs: verify
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.ROYALTYFLOW_AUTO_DEPLOY == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    environment: royaltyflow-production
-    concurrency:
-      group: royaltyflow-production
-      cancel-in-progress: false
-    steps:
-      - name: Check whether this commit is still on top of main
-        id: revision
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
-          if [[ "$current" == "$GITHUB_SHA" ]]; then
-            printf 'deploy=true\n' >> "$GITHUB_OUTPUT"
-          else
-            printf 'A newer main revision exists. This release was skipped.\n'
-          fi
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093a # v4.3.0
-        if: steps.revision.outputs.deploy == 'true'
-        with:
-          name: royaltyflow-release-${{ github.sha }}
-          path: ${{ runner.temp }}
-      - name: Deploy RoyaltyFlow over pinned SSH
-        if: steps.revision.outputs.deploy == 'true'
-        env:
-          SSH_KEY: ${{ secrets.FORNEX_SSH_PRIVATE_KEY }}
-          SSH_KNOWN_HOSTS: ${{ secrets.FORNEX_SSH_KNOWN_HOSTS }}
-        run: |
-          umask 077
-          [[ -n "$SSH_KEY" && -n "$SSH_KNOWN_HOSTS" ]] ||
-            { echo 'Configure both Fornex SSH secrets before deployment.' >&2; exit 1; }
-          ssh_dir=$(mktemp -d)
-          trap 'rm -f -- "$ssh_dir/key" "$ssh_dir/known_hosts"; rmdir -- "$ssh_dir"' EXIT
-          printf '%s\n' "$SSH_KEY" > "$ssh_dir/key"
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
-          unset SSH_KEY SSH_KNOWN_HOSTS
-          ssh-keygen -F 89.127.218.118 -f "$ssh_dir/known_hosts" >/dev/null ||
-            { echo 'Known hosts secret has no pinned key for the Fornex host.' >&2; exit 1; }
-          [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ ]]
-          ssh -F /dev/null -T -p 22 -i "$ssh_dir/key" \
-            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$ssh_dir/known_hosts" -o GlobalKnownHostsFile=/dev/null \
-            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 root@89.127.218.118 \
-            "set -eu; umask 077; install -d -m 700 /opt/royaltyflow-releases;
-            release=\$(mktemp -d /opt/royaltyflow-releases/release.XXXXXXXX);
-            tar -xzf - -C \"\$release\";
-            exec bash \"\$release/scripts/deploy-release.sh\" \"\$release\" '$GITHUB_SHA'" \
-            < "$RUNNER_TEMP/royaltyflow-release.tgz"

@@ -5,6 +5,7 @@ umask 077
 
 release=$1
 revision=$2
+mode=$3
 env_file=/opt/royaltyflow/deploy/.env
 compose_file="$release/deploy/docker-compose.yml"
 postgres=securities-repository-postgres-1
@@ -16,8 +17,12 @@ fail() {
     exit 1
 }
 
-[[ $revision =~ ^[a-f0-9]{40}$ && $release == /opt/royaltyflow-releases/release.* && -d $release && ! -L $release ]] ||
+[[ $revision =~ ^[a-f0-9]{40}$ && -d $release && ! -L $release ]] ||
     fail 'Invalid release directory or revision.'
+case "$mode:$release" in
+    deploy:/opt/royaltyflow-releases/release.*|preflight:/tmp/royaltyflow-check.*|diagnose:/tmp/royaltyflow-check.*) ;;
+    *) fail 'Invalid mode or staging directory.' ;;
+esac
 [[ -s $env_file && -f $env_file && ! -L $env_file && $(stat -c %a -- "$env_file") == 600 ]] ||
     fail 'Expected an existing regular deploy/.env with mode 600. Configure it on the VPS.'
 
@@ -97,6 +102,29 @@ wait_health() {
 
 checked_config "$compose_file" "$revision" check ||
     fail 'New Compose configuration is invalid. Check PostgreSQL and both authentication settings in deploy/.env.'
+if [[ $mode == diagnose ]]; then
+    if docker image inspect "royaltyflow-api:$revision" >/dev/null 2>&1; then
+        printf 'Release image %s exists.\n' "$revision"
+    else
+        printf 'Release image %s is absent.\n' "$revision"
+    fi
+    report=''
+    for candidate in /opt/royaltyflow-releases/release.*/migration-summary.txt; do
+        if [[ -f $candidate && ! -L $candidate && ( -z $report || $candidate -nt $report ) ]]; then
+            report=$candidate
+        fi
+    done
+    if [[ -n $report ]]; then cat -- "$report"; else printf 'No migration summary has been saved.\n'; fi
+    checked_config "$compose_file" "$revision" backup |
+        docker exec -i "$postgres" sh -c '
+            IFS= read -r PGPASSWORD || exit 1
+            export PGPASSWORD PGCONNECT_TIMEOUT=5 PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=5000"
+            exec psql -XwAt -v ON_ERROR_STOP=1 -h securities-repository-postgres-1 -U royaltyflow_user -d royaltyflow \
+                -c "SELECT current_database(), EXISTS (SELECT FROM pg_catalog.pg_extension WHERE extname = '\''btree_gist'\''), pg_catalog.to_regclass('\''public.\"__EFMigrationsHistory\"'\'') IS NOT NULL"
+        ' 2>/dev/null || fail 'Could not read PostgreSQL 16 metadata with the deployment credentials.'
+    printf 'Fields: database | btree_gist installed | EF migration history exists.\n'
+    exit 0
+fi
 current=$(api_container)
 [[ $current =~ ^[a-f0-9]{12,64}$ ]] || fail 'Expected exactly one running RoyaltyFlow API for rollback.'
 previous_image=$(docker inspect --format '{{.Image}}' "$current")
@@ -111,6 +139,10 @@ rollback_tag="rollback-${previous_image#sha256:}"
 checked_config "$previous_compose" "$rollback_tag" rollback ||
     fail 'Rollback Compose configuration is invalid.'
 wait_health "$previous_image" || fail 'Current API did not pass health checks. Deployment stopped.'
+if [[ $mode == preflight ]]; then
+    printf 'Preflight passed. The current container, Compose file and image are available for rollback.\n'
+    exit 0
+fi
 docker image tag "$previous_image" "royaltyflow-api:$rollback_tag"
 
 schema_touched=false
@@ -135,41 +167,58 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if ! docker load --input "$release/image.tar.gz" >/dev/null 2>&1; then
-    fail 'Docker could not load the release image.'
-fi
-rm -- "$release/image.tar.gz"
+printf 'Building RoyaltyFlow image from commit %s.\n' "$revision"
+compose "$compose_file" "$revision" build royaltyflow-api ||
+    fail 'Compose failed to build the release image.'
 release_image=$(docker image inspect --format '{{.Id}}' "royaltyflow-api:$revision")
 
+run_schema_command() {
+    local argument=$1 failures=(0 0)
+    compose "$compose_file" "$revision" run -T --rm --no-deps --pull never royaltyflow-api "$argument" </dev/null 2>&1 |
+        awk '/^RoyaltyFlow (has pending migrations|schema is up to date|migrations applied)\.$/ ||
+             /^Migration failed \([A-Za-z0-9_]+\)\. Check the royaltyflow target, PostgreSQL 16, schema permissions and concurrent migrations\.$/ {
+                 print
+             }' >> "$release/migration-summary.txt" || failures=("${PIPESTATUS[@]}")
+    (( failures[1] == 0 )) || return 1
+    printf '%s: Compose exit code %s\n' "$argument" "${failures[0]}" >> "$release/migration-summary.txt" || return 1
+    return "${failures[0]}"
+}
+
 migration_status=0
-compose "$compose_file" "$revision" run -T --rm --no-deps --pull never royaltyflow-api --check-migrations \
-    </dev/null >/dev/null 2>&1 || migration_status=$?
+run_schema_command --check-migrations || migration_status=$?
+case "$migration_status" in
+    0|10) ;;
+    *) cat -- "$release/migration-summary.txt"; fail 'Could not verify migration state.' ;;
+esac
+
+printf 'Creating a verified backup of royaltyflow.\n'
+backup_dir=$(mktemp -d /root/royaltyflow-backup.XXXXXXXX)
+partial="$backup_dir/royaltyflow.dump.partial"
+if ! checked_config "$compose_file" "$revision" backup |
+    docker exec -i "$postgres" sh -c '
+        IFS= read -r PGPASSWORD || exit 1
+        export PGPASSWORD PGCONNECT_TIMEOUT=5
+        exec pg_dump -w -h securities-repository-postgres-1 -U royaltyflow_user -d royaltyflow -Fc
+    ' >"$partial" 2>/dev/null; then
+    fail 'pg_dump failed. The current API is still running.'
+fi
+[[ -s $partial ]] &&
+    docker exec -i "$postgres" pg_restore --list <"$partial" >/dev/null 2>&1 &&
+    docker exec -i "$postgres" pg_restore --file=/dev/null <"$partial" >/dev/null 2>&1 ||
+    fail 'Backup verification failed. The current API is still running.'
+backup="$backup_dir/royaltyflow.dump"
+mv -- "$partial" "$backup"
+printf 'Verified backup: %s\n' "$backup"
+
 case "$migration_status" in
     0) printf 'Schema matches the release. Migration skipped.\n' ;;
     10)
-        printf 'Pending migrations. Creating a verified backup of royaltyflow.\n'
-        backup_dir=$(mktemp -d /root/royaltyflow-backup.XXXXXXXX)
-        partial="$backup_dir/royaltyflow.dump.partial"
-        if ! checked_config "$compose_file" "$revision" backup |
-            docker exec -i "$postgres" sh -c '
-                IFS= read -r PGPASSWORD || exit 1
-                export PGPASSWORD PGCONNECT_TIMEOUT=5
-                exec pg_dump -w -h securities-repository-postgres-1 -U royaltyflow_user -d royaltyflow -Fc
-            ' >"$partial" 2>/dev/null; then
-            fail 'pg_dump failed. Migration was skipped.'
-        fi
-        [[ -s $partial ]] &&
-            docker exec -i "$postgres" pg_restore --list <"$partial" >/dev/null 2>&1 &&
-            docker exec -i "$postgres" pg_restore --file=/dev/null <"$partial" >/dev/null 2>&1 ||
-            fail 'Backup verification failed. Migration was skipped.'
-        backup="$backup_dir/royaltyflow.dump"
-        mv -- "$partial" "$backup"
-        printf 'Verified backup: %s\n' "$backup"
         schema_touched=true
-        compose "$compose_file" "$revision" run -T --rm --no-deps --pull never royaltyflow-api --migrate \
-            </dev/null >/dev/null 2>&1 || fail "Migration failed. Existing API retained. Verified backup: $backup."
+        if ! run_schema_command --migrate; then
+            cat -- "$release/migration-summary.txt"
+            fail "Migration failed. Existing API retained. Verified backup: $backup."
+        fi
         ;;
-    *) fail "Could not verify migration state (exit $migration_status). Check connectivity, PostgreSQL 16 and migration history." ;;
 esac
 
 switch_attempted=true
