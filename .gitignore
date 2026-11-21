@@ -2,6 +2,7 @@
 **/obj/
 .vs/
 node_modules/
+/frontend/dist/
 .idea/
 .vscode/
 *.user
