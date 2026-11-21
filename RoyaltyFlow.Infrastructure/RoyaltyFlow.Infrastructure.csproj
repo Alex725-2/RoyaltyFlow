@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../RoyaltyFlow.Application/RoyaltyFlow.Application.csproj" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
+    <PackageReference Include="Dapper" Version="2.0.123" />
+    <EmbeddedResource Include="../docs/schema.sql" LogicalName="RoyaltyFlow.InitialSchema.sql" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <ItemGroup>
+    <ProjectReference Include="../RoyaltyFlow.Application/RoyaltyFlow.Application.csproj" />
+    <ProjectReference Include="../RoyaltyFlow.Infrastructure/RoyaltyFlow.Infrastructure.csproj" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />
+  </ItemGroup>
+</Project>

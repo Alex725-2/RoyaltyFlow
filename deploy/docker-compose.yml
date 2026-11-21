@@ -1,0 +1,37 @@
+name: royaltyflow
+
+services:
+  royaltyflow-api:
+    image: royaltyflow-api:${ROYALTYFLOW_TAG:-local}
+    build:
+      context: ..
+      dockerfile: RoyaltyFlow.Api/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      ASPNETCORE_URLS: http://+:8080
+      Postgres__Host: ${POSTGRES_HOST:-securities-repository-postgres-1}
+      Postgres__Database: ${POSTGRES_DB:-royaltyflow}
+      Postgres__User: ${POSTGRES_USER:-royaltyflow_user}
+      Postgres__Password: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in deploy/.env}
+      Imports__SpoolDirectory: /tmp/royaltyflow-uploads
+    networks:
+      - postgres-network
+    ports:
+      - "127.0.0.1:18080:8080"
+    restart: unless-stopped
+    init: true
+    mem_limit: 512m
+    mem_reservation: 128m
+    pids_limit: 128
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  postgres-network:
+    external: true
+    name: securities-repository_default

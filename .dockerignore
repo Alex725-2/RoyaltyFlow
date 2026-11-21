@@ -1,0 +1,19 @@
+# Only build inputs may enter the Docker context.
+**
+!global.json
+!Directory.Build.props
+!RoyaltyFlow.Api/
+!RoyaltyFlow.Api/**
+!RoyaltyFlow.Application/
+!RoyaltyFlow.Application/**
+!RoyaltyFlow.Domain/
+!RoyaltyFlow.Domain/**
+!RoyaltyFlow.Infrastructure/
+!RoyaltyFlow.Infrastructure/**
+!docs/
+!docs/schema.sql
+**/bin
+**/obj
+**/.env
+**/.env.*
+**/*.user
