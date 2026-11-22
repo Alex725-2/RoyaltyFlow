@@ -23,6 +23,78 @@ function Invoke-Checked([string]$Program, [string[]]$Arguments) {
     }
 }
 
+function Test-Dashboard {
+    $frontend = Join-Path $repository 'frontend'
+    $cache = Join-Path $repository 'obj\royaltyflow-npm-cache'
+    $files = @(Invoke-Checked git @('-c', 'core.quotePath=false', 'ls-files', '--', 'frontend/'))
+    $node = Invoke-Checked node @('-p', 'JSON.stringify([process.version, process.platform, process.arch])')
+    $npmOptions = @('--cache', $cache, '--no-update-notifier')
+    $npm = Invoke-Checked npm.cmd ($npmOptions + @('--version'))
+    $inputs = @($node, $npm)
+    foreach ($manifest in @('package.json', 'package-lock.json')) {
+        $inputs += (Get-FileHash -LiteralPath (Join-Path $frontend $manifest)).Hash
+    }
+    # Include the source paths so removed files cannot linger in a reused workspace.
+    $key = ($inputs + $files) | git hash-object --stdin
+    if ($LASTEXITCODE -ne 0 -or $key -cnotmatch '^[0-9a-f]{40,64}$') {
+        throw 'Could not identify the Dashboard build workspace.'
+    }
+    $root = Join-Path $repository "obj\royaltyflow-dashboard\$key"
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    $lock = [IO.File]::Open((Join-Path $root 'build.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+    try {
+        $marker = Join-Path $root 'ready.txt'
+        $workspace = $null
+        if (Test-Path -LiteralPath $marker) {
+            $ready = ([string](Get-Content -LiteralPath $marker -Raw)).Trim()
+            if ($ready -cmatch '^[0-9a-f]{32}$' -and
+                (Test-Path -LiteralPath (Join-Path $root "$ready\node_modules\.package-lock.json") -PathType Leaf)) {
+                $workspace = Join-Path $root $ready
+                Write-Host 'Reusing verified Dashboard dependencies.'
+            }
+        }
+
+        $install = -not $workspace
+        if ($install) {
+            $ci = $npmOptions + @('ci', '--include=dev', '--include=optional', '--no-audit', '--no-fund')
+            foreach ($fetchMode in @('--offline', '--prefer-offline')) {
+                # Each attempt starts empty. npm ci never has to clean up a previous tree.
+                $workspace = Join-Path $root ([Guid]::NewGuid().ToString('N'))
+                New-Item -ItemType Directory -Path $workspace | Out-Null
+                Copy-Item -LiteralPath @((Join-Path $frontend 'package.json'), (Join-Path $frontend 'package-lock.json')) -Destination $workspace
+                Push-Location -LiteralPath $workspace
+                try {
+                    & npm.cmd @ci $fetchMode --fetch-retries=3 --fetch-retry-mintimeout=2000 --fetch-retry-maxtimeout=10000 --fetch-timeout=30000
+                    $installed = $LASTEXITCODE -eq 0
+                } finally {
+                    Pop-Location
+                }
+                if ($installed) { break }
+                if ($fetchMode -eq '--offline') {
+                    Write-Host 'Offline install failed. Retrying with the project cache and registry access.'
+                }
+            }
+            if (-not $installed) { throw "Dashboard npm ci failed. See npm logs under $cache." }
+        }
+
+        foreach ($file in $files) {
+            $destination = Join-Path $workspace ($file.Substring('frontend/'.Length))
+            New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path $repository $file) -Destination $destination -Force
+        }
+        Push-Location -LiteralPath $workspace
+        try {
+            Invoke-Checked npm.cmd ($npmOptions + @('test'))
+            Invoke-Checked npm.cmd ($npmOptions + @('run', 'build'))
+        } finally {
+            Pop-Location
+        }
+        if ($install) { Set-Content -LiteralPath $marker -Value (Split-Path -Leaf $workspace) -Encoding Ascii }
+    } finally {
+        $lock.Dispose()
+    }
+}
+
 function Invoke-Fornex([string]$Mode, [string]$Revision, [string]$Archive) {
     if ($Mode -in @('deploy', 'deploy-seed')) {
         $remoteCommand = 'set -eu; umask 077; install -d -m 700 /opt/royaltyflow-releases; release=$(mktemp -d /opt/royaltyflow-releases/release.XXXXXXXX); tar --no-same-owner --no-same-permissions -xzf - -C $release; exec bash $release/scripts/deploy-release.sh $release __REVISION__ __MODE__'
@@ -93,14 +165,7 @@ try {
         Invoke-Checked dotnet @('build', 'RoyaltyFlow.sln', '-c', 'Release', '--no-restore')
         Invoke-Checked dotnet @('test', 'RoyaltyFlow.sln', '-c', 'Release', '--no-build', '--no-restore')
         Invoke-Checked py @('-3', '-m', 'unittest', 'discover', '-s', 'scripts')
-        Push-Location -LiteralPath (Join-Path $repository 'frontend')
-        try {
-            Invoke-Checked npm.cmd @('ci', '--no-fund', '--no-audit')
-            Invoke-Checked npm.cmd @('test')
-            Invoke-Checked npm.cmd @('run', 'build')
-        } finally {
-            Pop-Location
-        }
+        Test-Dashboard
         if ((& git rev-parse --verify HEAD) -cne $revision -or (& git status --porcelain --untracked-files=normal)) {
             throw 'The checkout changed during verification.'
         }
